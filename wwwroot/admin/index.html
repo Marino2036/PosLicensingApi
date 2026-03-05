@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Licencias - Panel Admin</title>
+    <style>
+        body {
+            font-family: Arial,Helvetica,sans-serif;
+            margin: 20px
+        }
+
+        input, button, select {
+            padding: 8px;
+            margin: 4px
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 12px
+        }
+
+        th, td {
+            border: 1px solid #ccc;
+            padding: 8px;
+            font-size: 14px
+        }
+
+        th {
+            background: #f5f5f5
+        }
+
+        .row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center
+        }
+
+        .ok {
+            color: green;
+            font-weight: bold
+        }
+
+        .bad {
+            color: #b00020;
+            font-weight: bold
+        }
+
+        .small {
+            font-size: 12px;
+            color: #666
+        }
+
+        .card {
+            border: 1px solid #ddd;
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 12px
+        }
+    </style>
+</head>
+<body>
+    <h2>Panel Admin - Licencias</h2>
+
+    <div class="card">
+        <div class="row">
+            <label>ADMIN_KEY:</label>
+            <input id="adminKey" type="password" placeholder="Pega tu ADMIN_KEY" style="min-width:320px" />
+            <button onclick="load()">Conectar / Cargar</button>
+            <span id="status" class="small"></span>
+        </div>
+        <div class="small">Tip: guarda tu key en el navegador con cuidado. Si prefieres, no la guardes.</div>
+    </div>
+
+    <div class="card">
+        <h3>Crear licencia</h3>
+        <div class="row">
+            <label>Tipo:</label>
+            <select id="tipo">
+                <option value="perma">Permanente (expires_at = NULL)</option>
+                <option value="mensual">Con vencimiento (fecha)</option>
+            </select>
+
+            <label>Expires (UTC):</label>
+            <input id="expiresUtc" type="datetime-local" />
+
+            <label>Max activaciones:</label>
+            <input id="maxAct" type="number" value="1" min="1" style="width:90px" />
+
+            <button onclick="create()">Crear</button>
+            <span class="small">Si lo dejas “perma”, ignora expires.</span>
+        </div>
+        <div class="small">Se genera una key automática tipo XXXX-XXXX-XXXX-XXXX.</div>
+    </div>
+
+    <div class="card">
+        <h3>Buscar</h3>
+        <div class="row">
+            <input id="q" placeholder="Buscar por key o machineId" style="min-width:320px" />
+            <button onclick="load()">Buscar</button>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>License Key</th>
+                    <th>Activa</th>
+                    <th>Expires (UTC)</th>
+                    <th>Bound Machine</th>
+                    <th>Max</th>
+                    <th>Used</th>
+                    <th>Acciones</th>
+                </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+        </table>
+    </div>
+
+    <script>
+  function headers() {
+    const k = document.getElementById("adminKey").value.trim();
+    return { "Content-Type":"application/json", "X-ADMIN-KEY": k };
+  }
+
+  function fmt(v){ return v ? v : ""; }
+
+  async function load(){
+    const st = document.getElementById("status");
+    st.textContent = "Cargando...";
+    st.className = "small";
+    const q = document.getElementById("q").value.trim();
+
+    const resp = await fetch(`/admin/api/licenses?q=${encodeURIComponent(q)}`, { headers: headers() });
+    if(!resp.ok){
+      st.textContent = `Error: HTTP ${resp.status}`;
+      st.className = "small bad";
+      document.getElementById("rows").innerHTML = "";
+      return;
+    }
+
+    const data = await resp.json();
+    st.textContent = `OK. ${data.length} licencia(s).`;
+    st.className = "small ok";
+
+    const tbody = document.getElementById("rows");
+    tbody.innerHTML = "";
+    for(const r of data){
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${r.id}</td>
+        <td><b>${r.license_key}</b></td>
+        <td>${r.is_active ? "?" : "?"}</td>
+        <td>${fmt(r.expires_at)}</td>
+        <td style="max-width:260px;word-break:break-all">${fmt(r.bound_machine_id)}</td>
+        <td>${r.max_activations}</td>
+        <td>${r.activations_used}</td>
+        <td>
+          <button onclick="toggle(${r.id}, ${r.is_active ? "false":"true"})">${r.is_active ? "Desactivar" : "Activar"}</button>
+          <button onclick="resetBind(${r.id})">Reset PC</button>
+          <button onclick="setExpires(${r.id})">Cambiar Expires</button>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    }
+  }
+
+  function genKey(){
+    function part(){
+      const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+      let s="";
+      for(let i=0;i<4;i++) s += chars[Math.floor(Math.random()*chars.length)];
+      return s;
+    }
+    return `${part()}-${part()}-${part()}-${part()}`;
+  }
+
+  async function create(){
+    const tipo = document.getElementById("tipo").value;
+    const maxAct = parseInt(document.getElementById("maxAct").value || "1",10);
+    let expiresUtc = null;
+
+    if(tipo === "mensual"){
+      const v = document.getElementById("expiresUtc").value;
+      if(!v){ alert("Pon una fecha de expiración."); return; }
+      // datetime-local no trae zona; lo tratamos como UTC para simplicidad
+      expiresUtc = new Date(v).toISOString();
+    }
+
+    const payload = { licenseKey: genKey(), isActive: true, expiresUtc, maxActivations: maxAct };
+
+    const resp = await fetch(`/admin/api/licenses`, {
+      method:"POST",
+      headers: headers(),
+      body: JSON.stringify(payload)
+    });
+
+    if(!resp.ok){ alert("Error creando: HTTP " + resp.status); return; }
+    const data = await resp.json();
+    alert("Creada: " + data.license_key);
+    await load();
+  }
+
+  async function toggle(id, isActive){
+    const resp = await fetch(`/admin/api/licenses/${id}/active`, {
+      method:"PUT",
+      headers: headers(),
+      body: JSON.stringify({ isActive })
+    });
+    if(!resp.ok){ alert("Error: HTTP " + resp.status); return; }
+    await load();
+  }
+
+  async function resetBind(id){
+    const resp = await fetch(`/admin/api/licenses/${id}/reset`, {
+      method:"POST",
+      headers: headers()
+    });
+    if(!resp.ok){ alert("Error: HTTP " + resp.status); return; }
+    await load();
+  }
+
+  async function setExpires(id){
+    const v = prompt("Pon expiresUtc en ISO (o vacío para NULL). Ej: 2026-12-31T23:59:59Z", "");
+    if(v === null) return;
+
+    const expiresUtc = v.trim() === "" ? null : v.trim();
+
+    const resp = await fetch(`/admin/api/licenses/${id}/expires`, {
+      method:"PUT",
+      headers: headers(),
+      body: JSON.stringify({ expiresUtc })
+    });
+    if(!resp.ok){ alert("Error: HTTP " + resp.status); return; }
+    await load();
+  }
+    </script>
+</body>
+</html>
