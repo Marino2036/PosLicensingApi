@@ -1,8 +1,9 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    link rel="stylesheet" href="./assets/estiloc.css">
     <title>Licencias - Panel Admin</title>
     <style>
         body {
@@ -123,13 +124,6 @@
             color: #b26b00;
         }
 
-        .top-actions {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-
         .generate-btn {
             background: #2563eb;
             color: white;
@@ -150,7 +144,7 @@
         <div class="row">
             <label>ADMIN_KEY:</label>
             <input id="adminKey" type="password" placeholder="Pega tu ADMIN_KEY" style="min-width:320px" />
-            <button onclick="loadAll()">Conectar / Cargar</button>
+            <button onclick="connectAndLoad()">Conectar / Cargar</button>
             <span id="status" class="small"></span>
         </div>
         <div class="small">Tip: guarda tu key en el navegador con cuidado. Si prefieres, no la guardes.</div>
@@ -158,7 +152,7 @@
 
     <div class="stats">
         <div class="stat-box">
-            <div class="stat-label">N�mero de activaciones</div>
+            <div class="stat-label">Número de activaciones</div>
             <div class="stat-value" id="statActivaciones">0</div>
         </div>
         <div class="stat-box">
@@ -166,7 +160,7 @@
             <div class="stat-value" id="statPcs">0</div>
         </div>
         <div class="stat-box">
-            <div class="stat-label">Vencimientos pr�ximos</div>
+            <div class="stat-label">Vencimientos próximos</div>
             <div class="stat-value" id="statVencimientos">0</div>
         </div>
     </div>
@@ -189,7 +183,7 @@
             <button class="generate-btn" onclick="create()">Generar licencia</button>
             <span class="small">Si eliges permanente, ignora expires.</span>
         </div>
-    
+    </div>
 
     <div class="card">
         <h3>Buscar</h3>
@@ -216,18 +210,30 @@
     </div>
 
     <script>
+        function getAdminKey() {
+            return document.getElementById("adminKey").value.trim();
+        }
+
         function headers() {
-            const k = document.getElementById("adminKey").value.trim();
-            return { "Content-Type": "application/json", "X-ADMIN-KEY": k };
+            return {
+                "Content-Type": "application/json",
+                "X-ADMIN-KEY": getAdminKey()
+            };
         }
 
         function fmt(v) { return v ? v : ""; }
 
+        function setStatus(text, cls = "small") {
+            const st = document.getElementById("status");
+            st.textContent = text;
+            st.className = cls;
+        }
+
         function renderStatus(status) {
-            if (status === "Activa") return `<span class="status-pill status-active">?? Activa</span>`;
-            if (status === "Desactivada") return `<span class="status-pill status-off">?? Desactivada</span>`;
-            if (status === "Vencida") return `<span class="status-pill status-off">? Vencida</span>`;
-            return `<span class="status-pill status-warn">?? Pr�xima</span>`;
+            if (status === "Activa") return `<span class="status-pill status-active">🟢 Activa</span>`;
+            if (status === "Desactivada") return `<span class="status-pill status-off">🔴 Desactivada</span>`;
+            if (status === "Vencida") return `<span class="status-pill status-off">⛔ Vencida</span>`;
+            return `<span class="status-pill status-warn">🟠 Próxima</span>`;
         }
 
         function genKey() {
@@ -240,34 +246,35 @@
             return `POS-${part()}-${part()}-${part()}`;
         }
 
-        async function loadStats() {
-            const resp = await fetch(`/admin/api/stats`, { headers: headers() });
-            if (!resp.ok) throw new Error("HTTP " + resp.status);
+        async function fetchJson(url, options = {}) {
+            const resp = await fetch(url, options);
+            let data = null;
 
-            const data = await resp.json();
+            try {
+                data = await resp.json();
+            } catch {
+                data = null;
+            }
+
+            if (!resp.ok) {
+                const msg = data?.error || data?.detail || `HTTP ${resp.status}`;
+                throw new Error(msg);
+            }
+
+            return data;
+        }
+
+        async function loadStats() {
+            const data = await fetchJson(`/admin/api/stats`, { headers: headers() });
+
             document.getElementById("statActivaciones").textContent = data.total_activations ?? 0;
             document.getElementById("statPcs").textContent = data.pcs_activadas ?? 0;
             document.getElementById("statVencimientos").textContent = data.vencimientos_proximos ?? 0;
         }
 
         async function loadLicenses() {
-            const st = document.getElementById("status");
-            st.textContent = "Cargando licencias...";
-            st.className = "small";
-
             const q = document.getElementById("q").value.trim();
-            const resp = await fetch(`/admin/api/licenses?q=${encodeURIComponent(q)}`, { headers: headers() });
-
-            if (!resp.ok) {
-                st.textContent = `Error: HTTP ${resp.status}`;
-                st.className = "small bad";
-                document.getElementById("rows").innerHTML = "";
-                return;
-            }
-
-            const data = await resp.json();
-            st.textContent = `OK. ${data.length} licencia(s).`;
-            st.className = "small ok";
+            const data = await fetchJson(`/admin/api/licenses?q=${encodeURIComponent(q)}`, { headers: headers() });
 
             const tbody = document.getElementById("rows");
             tbody.innerHTML = "";
@@ -290,98 +297,120 @@
                     `;
                 tbody.appendChild(tr);
             }
+
+            setStatus(`OK. ${data.length} licencia(s).`, "small ok");
         }
 
         async function loadAll() {
+            await loadStats();
+            await loadLicenses();
+        }
+
+        async function connectAndLoad() {
+            const key = getAdminKey();
+
+            if (!key) {
+                setStatus("Escribe la ADMIN_KEY.", "small bad");
+                return;
+            }
+
+            localStorage.setItem("admin_key", key);
+            setStatus("Cargando...", "small");
+
             try {
-                await loadStats();
-                await loadLicenses();
+                await loadAll();
             } catch (e) {
-                const st = document.getElementById("status");
-                st.textContent = "Error: " + e.message;
-                st.className = "small bad";
-            
+                setStatus("Error: " + e.message, "small bad");
+                console.error(e);
+            }
         }
 
         async function create() {
-            const tipo = document.getElementById("tipo").value;
-            const maxAct = parseInt(document.getElementById("maxAct").value || "1", 10);
-            let expiresUtc = null;
+            try {
+                const tipo = document.getElementById("tipo").value;
+                const maxAct = parseInt(document.getElementById("maxAct").value || "1", 10);
+                let expiresUtc = null;
 
-            if (tipo === "mensual") {
-                const v = document.getElementById("expiresUtc").value;
-                if (!v) {
-                    alert("Pon una fecha de expiraci�n.");
-                    return;
+                if (tipo === "mensual") {
+                    const v = document.getElementById("expiresUtc").value;
+                    if (!v) {
+                        alert("Pon una fecha de expiración.");
+                        return;
+                    }
+                    expiresUtc = new Date(v).toISOString();
                 }
-                expiresUtc = new Date(v).toISOString();
+
+                const payload = {
+                    licenseKey: genKey(),
+                    isActive: true,
+                    expiresUtc,
+                    maxActivations: maxAct
+                };
+
+                const data = await fetchJson(`/admin/api/licenses`, {
+                    method: "POST",
+                    headers: headers(),
+                    body: JSON.stringify(payload)
+                });
+
+                alert("Licencia generada: " + data.license_key);
+                await loadAll();
+            } catch (e) {
+                alert("Error creando licencia: " + e.message);
+                console.error(e);
             }
-
-            const payload = {
-                licenseKey: genKey(),
-                isActive: true,
-                expiresUtc,
-                maxActivations: maxAct
-            };
-
-            const resp = await fetch(`/admin/api/licenses`, {
-                method: "POST",
-                headers: headers(),
-                body: JSON.stringify(payload)
-            });
-
-            if (!resp.ok) {
-                alert("Error creando: HTTP " + resp.status);
-                return;
-            }
-
-            const data = await resp.json();
-            alert("Licencia generada: " + data.license_key);
-            await loadAll();
         }
 
         async function toggle(id, isActive) {
-            const resp = await fetch(`/admin/api/licenses/${id}/active`, {
-                method: "PUT",
-                headers: headers(),
-                body: JSON.stringify({ isActive })
-            });
-            if (!resp.ok) {
-                alert("Error: HTTP " + resp.status);
-                return;
+            try {
+                await fetchJson(`/admin/api/licenses/${id}/active`, {
+                    method: "PUT",
+                    headers: headers(),
+                    body: JSON.stringify({ isActive })
+                });
+                await loadAll();
+            } catch (e) {
+                alert("Error: " + e.message);
             }
-            await loadAll();
         }
 
         async function resetBind(id) {
-            const resp = await fetch(`/admin/api/licenses/${id}/reset`, {
-                method: "POST",
-                headers: headers()
-            });
-            if (!resp.ok) {
-                alert("Error: HTTP " + resp.status);
-                return;
+            try {
+                await fetchJson(`/admin/api/licenses/${id}/reset`, {
+                    method: "POST",
+                    headers: headers()
+                });
+                await loadAll();
+            } catch (e) {
+                alert("Error: " + e.message);
             }
-            await loadAll();
         }
 
         async function setExpires(id) {
-            const v = prompt("Pon expiresUtc en ISO (o vac�o para NULL). Ej: 2026-12-31T23:59:59Z", "");
-            if (v === null) return;
+            try {
+                const v = prompt("Pon expiresUtc en ISO (o vacío para NULL). Ej: 2026-12-31T23:59:59Z", "");
+                if (v === null) return;
 
-            const expiresUtc = v.trim() === "" ? null : v.trim();
+                const expiresUtc = v.trim() === "" ? null : v.trim();
 
-            const resp = await fetch(`/admin/api/licenses/${id}/expires`, {
-                method: "PUT",
-                headers: headers(),
-                body: JSON.stringify({ expiresUtc })
-            });
-            if (!resp.ok) {
-                alert("Error: HTTP " + resp.status);
-                return;
+                await fetchJson(`/admin/api/licenses/${id}/expires`, {
+                    method: "PUT",
+                    headers: headers(),
+                    body: JSON.stringify({ expiresUtc })
+                });
+
+                await loadAll();
+            } catch (e) {
+                alert("Error: " + e.message);
             }
-            await loadAll();
         }
+
+        window.onload = function () {
+            const saved = localStorage.getItem("admin_key");
+            if (saved) {
+                document.getElementById("adminKey").value = saved;
+            }
+        };
     </script>
 </body>
 </html>
