@@ -18,7 +18,7 @@ namespace PosLicensingApi
             builder.Services.AddEndpointsApiExplorer();
             builder.Services.AddSwaggerGen();
 
-            // JSON estable
+            // JSON estable (no camelCase)
             builder.Services.Configure<JsonOptions>(o =>
             {
                 o.SerializerOptions.PropertyNamingPolicy = null;
@@ -34,16 +34,19 @@ namespace PosLicensingApi
             }
 
             // ✅ Sirve wwwroot (admin panel)
+            // /admin/index.html debe existir dentro de wwwroot/admin/index.html
             app.UseDefaultFiles();
             app.UseStaticFiles();
 
             // ✅ Redirect cómodo
             app.MapGet("/admin", () => Results.Redirect("/admin/index.html"));
 
-            // ✅ Render a veces pega HEAD al / (healthcheck). Soportamos GET y HEAD.
+            // ✅ Health básico (Render a veces usa HEAD)
             app.MapMethods("/", new[] { "GET", "HEAD" }, () => Results.Ok("POS Licensing API OK"));
 
             // ✅ Connection String (Render env var recomendado)
+            // KEY en Render: ConnectionStrings__LicensingDb
+            // VALUE: postgresql://user:pass@host:5432/db?sslmode=require
             string connStr =
                 builder.Configuration.GetConnectionString("LicensingDb")
                 ?? Environment.GetEnvironmentVariable("ConnectionStrings__LicensingDb")
@@ -52,52 +55,38 @@ namespace PosLicensingApi
             // ✅ Admin key (Render env var: ADMIN_KEY)
             string adminKey = Environment.GetEnvironmentVariable("ADMIN_KEY") ?? "";
 
-            // Si no hay conn string, no seguimos
+            // ✅ Intentar asegurar schema al iniciar (pero NO tumbar la app)
+            Exception? schemaError = null;
+
             if (string.IsNullOrWhiteSpace(connStr))
             {
-                app.MapGet("/health/db", async () =>
-                {
-                    try
-                    {
-                        await using var conn = new NpgsqlConnection(connStr);
-                        await conn.OpenAsync();
-                        await using var cmd = new NpgsqlCommand("SELECT current_database() as db, now() as server_time;", conn);
-                        await using var rd = await cmd.ExecuteReaderAsync();
-                        await rd.ReadAsync();
-
-                        return Results.Ok(new
-                        {
-                            ok = true,
-                            db = rd["db"]?.ToString(),
-                            server_time = rd["server_time"]?.ToString(),
-                            schema_ok = schemaError == null,
-                            schema_error = schemaError?.Message
-                        });
-                    }
-                    catch (Exception ex)
-                    {
-                        return Results.Problem("DB error: " + ex.Message + (schemaError != null ? (" | schema_error: " + schemaError.Message) : ""));
-                    }
-                });
-
-                // ✅ Asegurar tabla / schema al iniciar
-                Exception? schemaError = null;
-            try
-            {
-                await EnsureSchemaAsync(connStr);
+                schemaError = new Exception("Falta ConnectionStrings__LicensingDb (connection string completa) en Render.");
             }
-            catch (Exception ex)
+            else
             {
-                schemaError = ex;
+                try
+                {
+                    await EnsureSchemaAsync(connStr);
+                }
+                catch (Exception ex)
+                {
+                    schemaError = ex;
+                }
             }
 
             // ✅ endpoint para revisar DB rápido
             app.MapGet("/health/db", async () =>
             {
+                if (string.IsNullOrWhiteSpace(connStr))
+                {
+                    return Results.Problem("Falta ConnectionStrings__LicensingDb en Render (connection string completa).");
+                }
+
                 try
                 {
                     await using var conn = new NpgsqlConnection(connStr);
                     await conn.OpenAsync();
+
                     await using var cmd = new NpgsqlCommand("SELECT current_database() as db, now() as server_time;", conn);
                     await using var rd = await cmd.ExecuteReaderAsync();
                     await rd.ReadAsync();
@@ -106,12 +95,14 @@ namespace PosLicensingApi
                     {
                         ok = true,
                         db = rd["db"]?.ToString(),
-                        server_time = rd["server_time"]?.ToString()
+                        server_time = rd["server_time"]?.ToString(),
+                        schema_ok = schemaError == null,
+                        schema_error = schemaError?.Message
                     });
                 }
                 catch (Exception ex)
                 {
-                    return Results.Problem("DB error: " + ex.Message);
+                    return Results.Problem("DB error: " + ex.Message + (schemaError != null ? (" | schema_error: " + schemaError.Message) : ""));
                 }
             });
 
@@ -120,6 +111,12 @@ namespace PosLicensingApi
             // ======================================================
             app.MapPost("/license/validate", async (ValidateRequest req) =>
             {
+                if (string.IsNullOrWhiteSpace(connStr))
+                    return Results.Problem("Falta ConnectionStrings__LicensingDb en el servidor.");
+
+                if (schemaError != null)
+                    return Results.Problem("Schema/DB no listo: " + schemaError.Message);
+
                 try
                 {
                     if (req == null || string.IsNullOrWhiteSpace(req.licenseKey) || string.IsNullOrWhiteSpace(req.machineId))
@@ -159,6 +156,7 @@ LIMIT 1;";
 
                     if (expiresAt.HasValue)
                     {
+                        // En Postgres TIMESTAMPTZ ya es UTC internamente; normalizamos
                         var expUtc = DateTime.SpecifyKind(expiresAt.Value, DateTimeKind.Utc);
                         if (DateTime.UtcNow > expUtc)
                             return Results.Ok(new { valid = false, expiresUtc = expUtc, message = "Licencia vencida." });
@@ -241,14 +239,19 @@ WHERE license_key = @k
             // GET /admin/api/licenses?q=
             app.MapGet("/admin/api/licenses", async (string? q) =>
             {
+                if (string.IsNullOrWhiteSpace(connStr))
+                    return Results.Problem("Falta ConnectionStrings__LicensingDb.");
+
+                if (schemaError != null)
+                    return Results.Problem("Schema/DB no listo: " + schemaError.Message);
+
                 await using var conn = new NpgsqlConnection(connStr);
                 await conn.OpenAsync();
 
                 q = (q ?? "").Trim();
 
                 string sql;
-                var cmd = new NpgsqlCommand();
-                cmd.Connection = conn;
+                var cmd = new NpgsqlCommand { Connection = conn };
 
                 if (string.IsNullOrWhiteSpace(q))
                 {
@@ -281,7 +284,9 @@ LIMIT 200;";
                         id = rd.GetInt32(rd.GetOrdinal("id")),
                         license_key = rd.GetString(rd.GetOrdinal("license_key")),
                         is_active = rd.GetBoolean(rd.GetOrdinal("is_active")),
-                        expires_at = exp.HasValue ? DateTime.SpecifyKind(exp.Value, DateTimeKind.Utc).ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture) : null,
+                        expires_at = exp.HasValue
+                            ? DateTime.SpecifyKind(exp.Value, DateTimeKind.Utc).ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)
+                            : null,
                         bound_machine_id = rd.IsDBNull(rd.GetOrdinal("bound_machine_id")) ? null : rd.GetString(rd.GetOrdinal("bound_machine_id")),
                         max_activations = rd.GetInt32(rd.GetOrdinal("max_activations")),
                         activations_used = rd.GetInt32(rd.GetOrdinal("activations_used"))
@@ -294,6 +299,12 @@ LIMIT 200;";
             // POST /admin/api/licenses
             app.MapPost("/admin/api/licenses", async (AdminCreateLicense req) =>
             {
+                if (string.IsNullOrWhiteSpace(connStr))
+                    return Results.Problem("Falta ConnectionStrings__LicensingDb.");
+
+                if (schemaError != null)
+                    return Results.Problem("Schema/DB no listo: " + schemaError.Message);
+
                 if (req == null || string.IsNullOrWhiteSpace(req.licenseKey))
                     return Results.BadRequest(new { error = "licenseKey requerido" });
 
@@ -314,7 +325,7 @@ RETURNING id, license_key, is_active, expires_at, bound_machine_id, max_activati
                 if (req.expiresUtc == null)
                     cmd.Parameters.AddWithValue("e", DBNull.Value);
                 else
-                    cmd.Parameters.AddWithValue("e", req.expiresUtc.Value);
+                    cmd.Parameters.AddWithValue("e", DateTime.SpecifyKind(req.expiresUtc.Value, DateTimeKind.Utc));
 
                 cmd.Parameters.AddWithValue("m", maxAct);
 
@@ -330,7 +341,9 @@ RETURNING id, license_key, is_active, expires_at, bound_machine_id, max_activati
                         id = rd.GetInt32(rd.GetOrdinal("id")),
                         license_key = rd.GetString(rd.GetOrdinal("license_key")),
                         is_active = rd.GetBoolean(rd.GetOrdinal("is_active")),
-                        expires_at = exp.HasValue ? DateTime.SpecifyKind(exp.Value, DateTimeKind.Utc).ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture) : null,
+                        expires_at = exp.HasValue
+                            ? DateTime.SpecifyKind(exp.Value, DateTimeKind.Utc).ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture)
+                            : null,
                         bound_machine_id = rd.IsDBNull(rd.GetOrdinal("bound_machine_id")) ? null : rd.GetString(rd.GetOrdinal("bound_machine_id")),
                         max_activations = rd.GetInt32(rd.GetOrdinal("max_activations")),
                         activations_used = rd.GetInt32(rd.GetOrdinal("activations_used"))
@@ -345,6 +358,12 @@ RETURNING id, license_key, is_active, expires_at, bound_machine_id, max_activati
             // PUT /admin/api/licenses/{id}/active
             app.MapPut("/admin/api/licenses/{id:int}/active", async (int id, AdminSetActive req) =>
             {
+                if (string.IsNullOrWhiteSpace(connStr))
+                    return Results.Problem("Falta ConnectionStrings__LicensingDb.");
+
+                if (schemaError != null)
+                    return Results.Problem("Schema/DB no listo: " + schemaError.Message);
+
                 await using var conn = new NpgsqlConnection(connStr);
                 await conn.OpenAsync();
 
@@ -362,6 +381,12 @@ RETURNING id, license_key, is_active, expires_at, bound_machine_id, max_activati
             // POST /admin/api/licenses/{id}/reset
             app.MapPost("/admin/api/licenses/{id:int}/reset", async (int id) =>
             {
+                if (string.IsNullOrWhiteSpace(connStr))
+                    return Results.Problem("Falta ConnectionStrings__LicensingDb.");
+
+                if (schemaError != null)
+                    return Results.Problem("Schema/DB no listo: " + schemaError.Message);
+
                 await using var conn = new NpgsqlConnection(connStr);
                 await conn.OpenAsync();
 
@@ -383,6 +408,12 @@ WHERE id = @id;";
             // PUT /admin/api/licenses/{id}/expires
             app.MapPut("/admin/api/licenses/{id:int}/expires", async (int id, AdminSetExpires req) =>
             {
+                if (string.IsNullOrWhiteSpace(connStr))
+                    return Results.Problem("Falta ConnectionStrings__LicensingDb.");
+
+                if (schemaError != null)
+                    return Results.Problem("Schema/DB no listo: " + schemaError.Message);
+
                 await using var conn = new NpgsqlConnection(connStr);
                 await conn.OpenAsync();
 
@@ -393,7 +424,7 @@ WHERE id = @id;";
                 if (req.expiresUtc == null)
                     cmd.Parameters.AddWithValue("e", DBNull.Value);
                 else
-                    cmd.Parameters.AddWithValue("e", req.expiresUtc.Value);
+                    cmd.Parameters.AddWithValue("e", DateTime.SpecifyKind(req.expiresUtc.Value, DateTimeKind.Utc));
 
                 int n = await cmd.ExecuteNonQueryAsync();
                 if (n <= 0) return Results.NotFound(new { error = "No existe." });
