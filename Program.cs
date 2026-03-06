@@ -55,13 +55,41 @@ namespace PosLicensingApi
             // Si no hay conn string, no seguimos
             if (string.IsNullOrWhiteSpace(connStr))
             {
-                app.MapGet("/health/db", () => Results.Problem("Falta ConnectionStrings__LicensingDb en Render (connection string completa)."));
-                app.Run();
-                return;
-            }
+                app.MapGet("/health/db", async () =>
+                {
+                    try
+                    {
+                        await using var conn = new NpgsqlConnection(connStr);
+                        await conn.OpenAsync();
+                        await using var cmd = new NpgsqlCommand("SELECT current_database() as db, now() as server_time;", conn);
+                        await using var rd = await cmd.ExecuteReaderAsync();
+                        await rd.ReadAsync();
 
-            // ✅ Asegurar tabla / schema al iniciar
-            await EnsureSchemaAsync(connStr);
+                        return Results.Ok(new
+                        {
+                            ok = true,
+                            db = rd["db"]?.ToString(),
+                            server_time = rd["server_time"]?.ToString(),
+                            schema_ok = schemaError == null,
+                            schema_error = schemaError?.Message
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        return Results.Problem("DB error: " + ex.Message + (schemaError != null ? (" | schema_error: " + schemaError.Message) : ""));
+                    }
+                });
+
+                // ✅ Asegurar tabla / schema al iniciar
+                Exception? schemaError = null;
+            try
+            {
+                await EnsureSchemaAsync(connStr);
+            }
+            catch (Exception ex)
+            {
+                schemaError = ex;
+            }
 
             // ✅ endpoint para revisar DB rápido
             app.MapGet("/health/db", async () =>
