@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    link rel="stylesheet" href="./assets/estiloc.css">
+    
     <title>Licencias - Panel Admin</title>
     <style>
         body {
@@ -147,7 +147,7 @@
             <button onclick="connectAndLoad()">Conectar / Cargar</button>
             <span id="status" class="small"></span>
         </div>
-        <div class="small">Tip: guarda tu key en el navegador con cuidado. Si prefieres, no la guardes.</div>
+        <div class="small"></div>
     </div>
 
     <div class="stats">
@@ -174,7 +174,7 @@
                 <option value="mensual">Con vencimiento</option>
             </select>
 
-            <label>Expires (UTC):</label>
+            <label>Fecha de Expiración:</label>
             <input id="expiresUtc" type="datetime-local" />
 
             <label>Max activaciones:</label>
@@ -198,10 +198,10 @@
                     <th>ID</th>
                     <th>License Key</th>
                     <th>Estado</th>
-                    <th>Expires (UTC)</th>
+                    <th>Fecha de Expiración</th>
                     <th>Bound Machine</th>
                     <th>Max</th>
-                    <th>Used</th>
+                    <th>Usados</th>
                     <th>Acciones</th>
                 </tr>
             </thead>
